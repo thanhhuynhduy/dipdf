@@ -20,6 +20,10 @@
 #include <QString>
 #include <poppler-qt6.h>
 
+class PdfViewport;
+
+class PageCache;
+
 class MainWindow : public QMainWindow {
     Q_OBJECT
 
@@ -69,12 +73,16 @@ private:
     void updateRecentFilesGrid();
     void addFileToRecent(const QString &filePath);
     void renderSidebarThumbnails(Poppler::Document* doc, QListWidget* listWidget);
+    void renderVisibleThumbnailsNow();
     void loadBookmarksHierarchy(Poppler::Document* doc);
     void parseOutlineNode(const Poppler::OutlineItem &item, QStandardItem *parentItem);
     void renderCurrentPage(QScrollArea *scrollArea, int pageIndex);
     void renderVisiblePages(QScrollArea *scrollArea);
     void applyZoomToCurrentDocument(double newZoom);
     void updateToolbarDisplay();
+
+    // Helper: get document ID for cache keys from a scroll area.
+    static quintptr docIdFromScrollArea(const QScrollArea *sa);
 
 protected:
     bool eventFilter(QObject *obj, QEvent *event) override;
@@ -135,6 +143,11 @@ private:
 
     QTimer *thumbnailTimer = nullptr;
     bool suppressPlusTabOpen = false;
+    QMetaObject::Connection m_thumbScrollConn;  // lazy thumbnail scroll connection
+
+    // ── Memory-optimized page caches ──
+    PageCache *m_pageCache      = nullptr;  //  96 MB budget for rendered pages
+    PageCache *m_thumbnailCache = nullptr;  //  16 MB budget for sidebar thumbnails
 };
 
 #endif // MAINWINDOW_H

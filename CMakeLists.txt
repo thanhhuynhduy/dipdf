@@ -23,7 +23,9 @@ set(PROJECT_SOURCES
     mainwindow.cpp
     theme_manager.h
     theme_manager.cpp
-    pdfpagewidget.cpp
+    pagecache.h
+    pagecache.cpp
+    pdfviewport.cpp
     resources.qrc
 )
 
@@ -53,9 +55,15 @@ install(FILES packaging/DiPDF.desktop
 
 # Install all available icon sizes so desktop environments and AppImage
 # integration can pick the best icon for the taskbar, Alt-Tab and launcher.
-install(DIRECTORY icons/hicolor
-        DESTINATION share/icons
-)
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/icons/hicolor")
+    install(DIRECTORY icons/hicolor
+            DESTINATION share/icons
+    )
+elseif(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/packaging/DiPDF.png")
+    install(FILES packaging/DiPDF.png
+            DESTINATION share/icons/hicolor/256x256/apps
+    )
+endif()
 
 # Keep the packaging icon too; linuxdeploy uses this file with --icon-file.
 install(FILES packaging/DiPDF.png

@@ -34,7 +34,13 @@
 #include <QRubberBand>
 #include <QtMath>
 #include <QInputMethod>
-#include "pdfpagewidget.h"
+#include "pdfviewport.h"
+#include "pagecache.h"
+
+// ── Memory / cache configuration constants ──
+static constexpr qint64 PAGE_CACHE_BUDGET_MB      = 96;
+static constexpr qint64 THUMBNAIL_CACHE_BUDGET_MB  = 16;
+static constexpr double THUMBNAIL_DPI              = 36.0;
 
 
 class PdfScrollArea : public QScrollArea {
@@ -128,59 +134,6 @@ void enableTextInputMethod(QWidget *widget) {
     widget->setFocusPolicy(Qt::StrongFocus);
     widget->setInputMethodHints(Qt::ImhNone);
 }
-
-void syncPdfContainerGeometry(QScrollArea *scrollArea) {
-    if (!scrollArea) return;
-    QWidget *container = scrollArea->widget();
-    if (!container || !container->layout()) return;
-
-    QLayout *layout = container->layout();
-    const int count = layout->count();
-
-    QMargins margins = layout->contentsMargins();
-    int spacing = layout->spacing();
-    if (spacing < 0) spacing = ThemeManager::Sp20;
-
-    int maxPageWidth = 0;
-    int totalHeight = margins.top() + margins.bottom();
-    for (int i = 0; i < count; ++i) {
-        QLayoutItem *item = layout->itemAt(i);
-        QWidget *page = item ? item->widget() : nullptr;
-        if (!page) continue;
-        maxPageWidth = qMax(maxPageWidth, page->width());
-        totalHeight += page->height();
-        if (i + 1 < count) totalHeight += spacing;
-    }
-
-    // IMPORTANT: do not ask QVBoxLayout to recalculate page positions here.
-    // At 125%+ zoom it can reuse a stale container height for one event-cycle,
-    // which makes the following page paint over the previous page. We keep the
-    // layout only as an ordered list of page widgets and place every page by hand.
-    const int viewportWidth = scrollArea->viewport() ? scrollArea->viewport()->width() : 0;
-    const int contentWidth = qMax(maxPageWidth + margins.left() + margins.right(), qMax(1, viewportWidth));
-    totalHeight = qMax(1, totalHeight);
-
-    if (container->size() != QSize(contentWidth, totalHeight)) {
-        container->setMinimumSize(contentWidth, totalHeight);
-        container->setMaximumSize(contentWidth, totalHeight);
-        container->resize(contentWidth, totalHeight);
-    }
-
-    int y = margins.top();
-    for (int i = 0; i < count; ++i) {
-        QLayoutItem *item = layout->itemAt(i);
-        QWidget *page = item ? item->widget() : nullptr;
-        if (!page) continue;
-        const int x = qMax(margins.left(), (contentWidth - page->width()) / 2);
-        const QRect wanted(x, y, page->width(), page->height());
-        if (page->geometry() != wanted) page->setGeometry(wanted);
-        y += page->height() + spacing;
-    }
-
-    container->updateGeometry();
-    container->update();
-    if (scrollArea->viewport()) scrollArea->viewport()->update();
-}
 }
 
 MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent) {
@@ -191,13 +144,42 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent) {
     networkManager = new QNetworkAccessManager(this);
     connect(networkManager, &QNetworkAccessManager::finished, this, &MainWindow::onAiReplyFinished);
 
+    // ── Create memory-bounded page caches ──
+    m_pageCache      = new PageCache(PAGE_CACHE_BUDGET_MB * 1024 * 1024,
+                                     QStringLiteral("MainPageCache"));
+    m_thumbnailCache = new PageCache(THUMBNAIL_CACHE_BUDGET_MB * 1024 * 1024,
+                                     QStringLiteral("ThumbnailCache"));
+
     createMainLayout();
     applyGlobalStyle();
     loadAiConfig();
     updateRecentFilesGrid();
 }
 
-MainWindow::~MainWindow() {}
+MainWindow::~MainWindow() {
+    // Clean up all open document tabs (frees Poppler::Document pointers).
+    while (pdfTabWidget->count() > 0) {
+        QWidget *w = pdfTabWidget->widget(0);
+        if (w && w != plusTabWidget) {
+            if (auto *sa = qobject_cast<QScrollArea*>(w)) {
+                auto *doc = reinterpret_cast<Poppler::Document*>(
+                    sa->property("popplerDoc").toLongLong());
+                sa->setProperty("popplerDoc", QVariant());
+                delete doc;
+            }
+        }
+        pdfTabWidget->removeTab(0);
+        if (w && w != plusTabWidget) delete w;
+    }
+
+    delete m_pageCache;
+    delete m_thumbnailCache;
+}
+
+quintptr MainWindow::docIdFromScrollArea(const QScrollArea *sa) {
+    if (!sa) return 0;
+    return static_cast<quintptr>(sa->property("popplerDoc").toLongLong());
+}
 
 void MainWindow::applyGlobalStyle() {
     // ThemeManager::globalStyleSheet() applied in main.cpp — nothing extra needed
@@ -1240,9 +1222,6 @@ void MainWindow::openPdfFile(const QString &filePath) {
     currentZoom = 1.0;
 
     QScrollArea *scrollArea = new PdfScrollArea(this);
-    // Do not let QScrollArea continuously resize the PDF container to the
-    // viewport.  At high zoom levels that delayed resize was the reason pages
-    // stayed blank until a scrollbar event forced a relayout/repaint.
     scrollArea->setWidgetResizable(false);
     scrollArea->setSizeAdjustPolicy(QAbstractScrollArea::AdjustIgnored);
     scrollArea->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
@@ -1250,48 +1229,31 @@ void MainWindow::openPdfFile(const QString &filePath) {
     scrollArea->setAlignment(Qt::AlignHCenter | Qt::AlignTop);
     scrollArea->setStyleSheet(ThemeManager::scrollAreaCanvasStyle());
 
-    QWidget *container = new QWidget(scrollArea);
-    container->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Fixed);
-    container->setMinimumSize(0, 0);
-    container->setStyleSheet(QString("background: %1;").arg(ThemeManager::CanvasBg));
-    QVBoxLayout *vlayout = new QVBoxLayout(container);
-    vlayout->setContentsMargins(ThemeManager::Sp24, ThemeManager::Sp24, ThemeManager::Sp24, ThemeManager::Sp24);
-    vlayout->setSpacing(ThemeManager::Sp20);
-    vlayout->setAlignment(Qt::AlignHCenter);
-    vlayout->setSizeConstraint(QLayout::SetFixedSize);
+    // Match the canvas background on the scroll area viewport so there's
+    // no visible gap when the viewport is wider than the document.
+    if (scrollArea->viewport()) {
+        scrollArea->viewport()->setStyleSheet(
+            QString("background: %1;").arg(ThemeManager::CanvasBg));
+    }
 
     Poppler::Document* rawDocPtr = doc.release();
     scrollArea->setProperty("popplerDoc", QVariant::fromValue(reinterpret_cast<qlonglong>(rawDocPtr)));
-    scrollArea->setProperty("currentPage", 0);
     scrollArea->setProperty("zoomFactor", currentZoom);
 
-    for (int i = 0; i < rawDocPtr->numPages(); ++i) {
-        PdfPageWidget *lbl = new PdfPageWidget(container);
-        lbl->setProperty("pageIndex", i);
-        lbl->setProperty("needsRender", true);
-        
-        std::unique_ptr<Poppler::Page> page = rawDocPtr->page(i);
-        if (page) {
-            QSizeF size = page->pageSizeF();
-            lbl->setProperty("basePageWidth", size.width());
-            lbl->setProperty("basePageHeight", size.height());
-            lbl->setFixedSize(qMax(1, qCeil(size.width() * currentZoom)),
-                              qMax(1, qCeil(size.height() * currentZoom)));
-        }
-
-        lbl->installEventFilter(this);
-        vlayout->addWidget(lbl);
-    }
-
-    // The layout is kept only as an ordered page list. Manual geometry below is
-    // more deterministic for zooming than QVBoxLayout's delayed relayout pass.
-    vlayout->setEnabled(false);
-
-    scrollArea->setWidget(container);
-    syncPdfContainerGeometry(scrollArea);
+    // ── Create virtualized viewport (NO per-page widgets) ──
+    // PdfViewport stores only lightweight metadata (32 bytes/page) and
+    // paints visible pages directly from the LRU cache.
+    PdfViewport *viewport = new PdfViewport(scrollArea);
+    viewport->setDocument(rawDocPtr, m_pageCache, currentZoom, devicePixelRatioF());
+    scrollArea->setWidget(viewport);
 
     connect(scrollArea->verticalScrollBar(), &QScrollBar::valueChanged, this, [this, scrollArea]() {
         renderVisiblePages(scrollArea);
+    });
+
+    // Update toolbar when PdfViewport detects the current page changed.
+    connect(viewport, &PdfViewport::currentPageChanged, this, [this](int) {
+        updateToolbarDisplay();
     });
 
     QFileInfo info(filePath);
@@ -1301,147 +1263,49 @@ void MainWindow::openPdfFile(const QString &filePath) {
 
     onNavigationChanged(5);
 
+    // Deferred render — only the first visible pages will actually be rendered.
     QTimer::singleShot(50, this, [this, scrollArea]() {
         renderVisiblePages(scrollArea);
     });
 }
 
 // ════════════════════════════════════════════════════════════════════════════
-// RENDER PAGES (LOGIC UNCHANGED)
+// RENDER PAGES — Cache-backed, with LRU eviction
 // ════════════════════════════════════════════════════════════════════════════
 
 void MainWindow::renderVisiblePages(QScrollArea *scrollArea) {
     if (!scrollArea) return;
-    auto *doc = reinterpret_cast<Poppler::Document*>(scrollArea->property("popplerDoc").toLongLong());
-    if (!doc) return;
+    auto *viewport = qobject_cast<PdfViewport*>(scrollArea->widget());
+    if (!viewport || !viewport->document()) return;
 
-    QWidget *container = scrollArea->widget();
-    if (!container || !container->layout()) return;
-
-    const double zoom = scrollArea->property("zoomFactor").isValid()
-                            ? scrollArea->property("zoomFactor").toDouble()
-                            : currentZoom;
-
-    syncPdfContainerGeometry(scrollArea);
-    QLayout *layout = container->layout();
-
-    const int scrollY = scrollArea->verticalScrollBar()->value();
+    const int scrollY       = scrollArea->verticalScrollBar()->value();
     const int viewportHeight = scrollArea->viewport()->height();
-    const int renderMargin = qMax(3000, viewportHeight * 2);
-    const int currentPage = qBound(0, scrollArea->property("currentPage").toInt(), doc->numPages() - 1);
-
-    int firstVisiblePage = -1;
-
-    for (int i = 0; i < layout->count(); ++i) {
-        PdfPageWidget *lbl = qobject_cast<PdfPageWidget*>(layout->itemAt(i)->widget());
-        if (!lbl) continue;
-
-        const bool inRenderWindow = (lbl->y() + lbl->height() >= scrollY - renderMargin &&
-                                     lbl->y() <= scrollY + viewportHeight + renderMargin);
-        const bool isAnchorPage = (i == currentPage);
-        const bool shouldRender = inRenderWindow || isAnchorPage;
-
-        if (firstVisiblePage == -1 &&
-            lbl->y() + lbl->height() / 2 >= scrollY &&
-            lbl->y() + lbl->height() / 2 <= scrollY + viewportHeight) {
-            firstVisiblePage = i;
-        }
-
-        if (!shouldRender || !lbl->property("needsRender").toBool()) {
-            continue;
-        }
-
-        std::unique_ptr<Poppler::Page> page = doc->page(i);
-        if (page) {
-            double dpr = devicePixelRatioF();
-            double res = std::round(72.0 * zoom * dpr);
-            QImage img = page->renderToImage(res, res);
-            if (!img.isNull()) {
-                QPixmap pix = QPixmap::fromImage(img);
-                lbl->setPopplerPage(doc->page(i), zoom);
-                lbl->setPagePixmap(pix);
-                lbl->setProperty("needsRender", false);
-            }
-        }
-    }
-
-    if (firstVisiblePage == -1) {
-        firstVisiblePage = currentPage;
-    }
-
-    if (firstVisiblePage >= 0 && scrollArea->property("currentPage").toInt() != firstVisiblePage) {
-        scrollArea->setProperty("currentPage", firstVisiblePage);
-        updateToolbarDisplay();
-    }
+    viewport->renderVisiblePages(scrollY, viewportHeight);
 }
 
 void MainWindow::renderCurrentPage(QScrollArea *scrollArea, int pageIndex) {
     if (!scrollArea) return;
-    auto *doc = reinterpret_cast<Poppler::Document*>(scrollArea->property("popplerDoc").toLongLong());
-    QWidget *container = scrollArea->widget();
-    if (!doc || !container || !container->layout()) return;
-    if (pageIndex < 0 || pageIndex >= doc->numPages()) return;
+    auto *viewport = qobject_cast<PdfViewport*>(scrollArea->widget());
+    if (!viewport || pageIndex < 0 || pageIndex >= viewport->pageCount()) return;
 
-    QLayoutItem *item = container->layout()->itemAt(pageIndex);
-    if (!item || !item->widget()) return;
-
-    scrollArea->setProperty("currentPage", pageIndex);
-    item->widget()->setProperty("needsRender", true);
-    syncPdfContainerGeometry(scrollArea);
-    scrollArea->verticalScrollBar()->setValue(item->widget()->y());
+    scrollArea->verticalScrollBar()->setValue(viewport->pageYOffset(pageIndex));
     renderVisiblePages(scrollArea);
-    scrollArea->viewport()->update();
     updateToolbarDisplay();
 }
 
 // ════════════════════════════════════════════════════════════════════════════
-// EVENT FILTER (DRAG-SCROLL — LOGIC UNCHANGED)
+// EVENT FILTER — PdfViewport handles drag-to-scroll and text selection
+// internally, so no container interception is needed.
 // ════════════════════════════════════════════════════════════════════════════
 
 bool MainWindow::eventFilter(QObject *obj, QEvent *event) {
-    if (auto *sa = qobject_cast<QScrollArea*>(pdfTabWidget->currentWidget())) {
-        if (obj == sa->widget()) {
-            static QPoint lastMousePos;
-            static bool isDragging = false;
-
-            if (event->type() == QEvent::MouseButtonPress) {
-                QMouseEvent *mouseEvent = static_cast<QMouseEvent*>(event);
-                if (mouseEvent->button() == Qt::LeftButton) {
-                    isDragging = true;
-                    lastMousePos = mouseEvent->globalPosition().toPoint();
-                    sa->widget()->setCursor(Qt::ClosedHandCursor);
-                    return true;
-                }
-            } else if (event->type() == QEvent::MouseMove) {
-                if (isDragging) {
-                    QMouseEvent *mouseEvent = static_cast<QMouseEvent*>(event);
-                    QPoint currentPos = mouseEvent->globalPosition().toPoint();
-                    QPoint delta = currentPos - lastMousePos;
-                    lastMousePos = currentPos;
-
-                    QScrollBar *hBar = sa->horizontalScrollBar();
-                    QScrollBar *vBar = sa->verticalScrollBar();
-                    hBar->setValue(hBar->value() - delta.x());
-                    vBar->setValue(vBar->value() - delta.y());
-                    return true;
-                }
-            } else if (event->type() == QEvent::MouseButtonRelease) {
-                QMouseEvent *mouseEvent = static_cast<QMouseEvent*>(event);
-                if (mouseEvent->button() == Qt::LeftButton) {
-                    if (isDragging) {
-                        isDragging = false;
-                        sa->widget()->setCursor(Qt::ArrowCursor);
-                        return true;
-                    }
-                }
-            }
-        }
-    }
+    Q_UNUSED(obj);
+    Q_UNUSED(event);
     return QMainWindow::eventFilter(obj, event);
 }
 
 // ════════════════════════════════════════════════════════════════════════════
-// THUMBNAILS
+// THUMBNAILS — Lazy loading: only render visible items + small buffer
 // ════════════════════════════════════════════════════════════════════════════
 
 void MainWindow::renderSidebarThumbnails(Poppler::Document* doc, QListWidget* listWidget) {
@@ -1453,61 +1317,112 @@ void MainWindow::renderSidebarThumbnails(Poppler::Document* doc, QListWidget* li
     listWidget->setIconSize(QSize(140, 200));
     listWidget->setSpacing(6);
 
-    // Initial placeholder empty icon
-    QPixmap pm(140, 200);
-    pm.fill(QColor(ThemeManager::Surface));
-    QIcon emptyIcon(pm);
+    // Shared placeholder — Qt implicit sharing means only 1 pixmap in memory.
+    static QPixmap sharedPlaceholder;
+    if (sharedPlaceholder.isNull()) {
+        sharedPlaceholder = QPixmap(140, 200);
+        sharedPlaceholder.fill(QColor(ThemeManager::Surface));
+    }
+    QIcon placeholderIcon(sharedPlaceholder);
 
     for (int i = 0; i < total; ++i) {
-        QListWidgetItem *item = new QListWidgetItem(emptyIcon, QString::number(i + 1), listWidget);
+        QListWidgetItem *item = new QListWidgetItem(placeholderIcon, QString::number(i + 1), listWidget);
         item->setTextAlignment(Qt::AlignHCenter | Qt::AlignBottom);
         listWidget->addItem(item);
     }
     listWidget->blockSignals(false);
 
-    // Stop existing thumbnail rendering timer if any
+    // Stop existing thumbnail timer
     if (thumbnailTimer) {
         thumbnailTimer->stop();
-        delete thumbnailTimer;
+        thumbnailTimer->deleteLater();
+        thumbnailTimer = nullptr;
     }
+
+    // Disconnect old scroll connection
+    if (m_thumbScrollConn) {
+        disconnect(m_thumbScrollConn);
+        m_thumbScrollConn = {};
+    }
+
+    // Debounce timer for lazy thumbnail rendering
     thumbnailTimer = new QTimer(this);
-    
-    // Allocate raw pointer since lambda mutable requires caution, but we just capture it.
-    // NOTE: If doc is deleted while timer runs, this will crash. In a real app we'd track doc validity.
-    // For now we just safely render 1 page per tick to avoid freezing UI.
-    int* currentIndex = new int(0);
-    connect(thumbnailTimer, &QTimer::timeout, this, [this, doc, listWidget, total, currentIndex]() {
-        if (!doc || !listWidget || *currentIndex >= total) {
-            thumbnailTimer->stop();
-            delete currentIndex;
-            return;
+    thumbnailTimer->setSingleShot(true);
+    thumbnailTimer->setInterval(80);
+    connect(thumbnailTimer, &QTimer::timeout, this, &MainWindow::renderVisibleThumbnailsNow);
+
+    // Connect list scroll to debounce timer
+    m_thumbScrollConn = connect(listWidget->verticalScrollBar(), &QScrollBar::valueChanged,
+                                this, [this]() {
+        if (thumbnailTimer) thumbnailTimer->start();
+    });
+
+    // Initial render of visible thumbnails (after layout settles)
+    QTimer::singleShot(50, this, &MainWindow::renderVisibleThumbnailsNow);
+}
+
+void MainWindow::renderVisibleThumbnailsNow() {
+    if (!thumbnailListWidget) return;
+    auto *sa = qobject_cast<QScrollArea*>(pdfTabWidget->currentWidget());
+    if (!sa) return;
+    auto *doc = reinterpret_cast<Poppler::Document*>(sa->property("popplerDoc").toLongLong());
+    if (!doc) return;
+
+    const int total = doc->numPages();
+    const quintptr docId = reinterpret_cast<quintptr>(doc);
+
+    // Determine visible item range using QListWidget's itemAt()
+    QListWidgetItem *firstItem = thumbnailListWidget->itemAt(0, 0);
+    QListWidgetItem *lastItem  = thumbnailListWidget->itemAt(0, thumbnailListWidget->viewport()->height() - 1);
+    int firstVisible = firstItem ? thumbnailListWidget->row(firstItem) : 0;
+    int lastVisible  = lastItem  ? thumbnailListWidget->row(lastItem)  : qMin(total - 1, 5);
+
+    // Buffer: render a few extra items above/below
+    firstVisible = qMax(0, firstVisible - 3);
+    lastVisible  = qMin(total - 1, lastVisible + 3);
+
+    for (int i = firstVisible; i <= lastVisible; ++i) {
+        QListWidgetItem *item = thumbnailListWidget->item(i);
+        if (!item) continue;
+
+        // Already rendered?
+        if (item->data(Qt::UserRole + 1).toBool()) continue;
+
+        // Try thumbnail cache
+        if (m_thumbnailCache) {
+            PageCacheKey key = makeCacheKey(docId, i, THUMBNAIL_DPI, 1.0);
+            QPixmap cached = m_thumbnailCache->get(key);
+            if (!cached.isNull()) {
+                item->setIcon(QIcon(cached));
+                item->setData(Qt::UserRole + 1, true);
+                continue;
+            }
         }
-        
-        int batchSize = 1; // render 1 page per tick (approx 10-20ms each)
-        for (int i = 0; i < batchSize; ++i) {
-            if (*currentIndex >= total) break;
-            
-            if (QListWidgetItem *item = listWidget->item(*currentIndex)) {
-                std::unique_ptr<Poppler::Page> page = doc->page(*currentIndex);
-                if (page) {
-                    QImage img = page->renderToImage(36.0, 36.0); // low res thumbnail
-                    if (!img.isNull()) {
-                        QPixmap pix = QPixmap::fromImage(img).scaled(140, 200, Qt::KeepAspectRatio, Qt::SmoothTransformation);
-                        QPixmap canvas(140, 200);
-                        canvas.fill(Qt::white);
-                        QPainter p(&canvas);
-                        int x = (140 - pix.width()) / 2;
-                        int y = (200 - pix.height()) / 2;
-                        p.drawPixmap(x, y, pix);
-                        p.end();
-                        item->setIcon(QIcon(canvas));
-                    }
+
+        // Render thumbnail
+        std::unique_ptr<Poppler::Page> page = doc->page(i);
+        if (page) {
+            QImage img = page->renderToImage(THUMBNAIL_DPI, THUMBNAIL_DPI);
+            if (!img.isNull()) {
+                QPixmap pix = QPixmap::fromImage(std::move(img))
+                                  .scaled(140, 200, Qt::KeepAspectRatio, Qt::SmoothTransformation);
+                QPixmap canvas(140, 200);
+                canvas.fill(Qt::white);
+                QPainter p(&canvas);
+                int x = (140 - pix.width()) / 2;
+                int y = (200 - pix.height()) / 2;
+                p.drawPixmap(x, y, pix);
+                p.end();
+                item->setIcon(QIcon(canvas));
+                item->setData(Qt::UserRole + 1, true);
+
+                if (m_thumbnailCache) {
+                    PageCacheKey key = makeCacheKey(docId, i, THUMBNAIL_DPI, 1.0);
+                    m_thumbnailCache->insert(key, canvas);
                 }
             }
-            (*currentIndex)++;
         }
-    });
-    thumbnailTimer->start(5); // fast interval, UI remains responsive
+    }
 }
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -1800,11 +1715,11 @@ void MainWindow::closePdfTab(int index) {
     suppressPlusTabOpen = true;
     if (auto *sa = qobject_cast<QScrollArea*>(w)) {
         auto *doc = reinterpret_cast<Poppler::Document*>(sa->property("popplerDoc").toLongLong());
+        const quintptr docId = reinterpret_cast<quintptr>(doc);
         sa->setProperty("popplerDoc", QVariant());
-        if (QWidget *c = sa->widget()) {
-            c->setMinimumSize(0, 0);
-            c->resize(0, 0);
-        }
+        // ── Free all cached data for this document ──
+        if (m_pageCache)      m_pageCache->clearForDocument(docId);
+        if (m_thumbnailCache) m_thumbnailCache->clearForDocument(docId);
         if (doc) delete doc;
     }
 
@@ -1882,8 +1797,9 @@ void MainWindow::onPdfTabChanged(int index) {
 void MainWindow::updateToolbarDisplay() {
     if (auto *sa = qobject_cast<QScrollArea*>(pdfTabWidget->currentWidget())) {
         auto *doc = reinterpret_cast<Poppler::Document*>(sa->property("popplerDoc").toLongLong());
-        if (doc) {
-            int current = sa->property("currentPage").toInt();
+        auto *viewport = qobject_cast<PdfViewport*>(sa->widget());
+        if (doc && viewport) {
+            int current = viewport->currentVisiblePage();
             pageInput->setText(QString::number(current + 1));
             totalPagesLabel->setText(QString("/ %1").arg(doc->numPages()));
             zoomLabel->setText(QString("%1%").arg(qRound(currentZoom * 100)));
@@ -1895,16 +1811,10 @@ void MainWindow::jumpToPage() {
     int target = pageInput->text().toInt() - 1;
     if (auto *sa = qobject_cast<QScrollArea*>(pdfTabWidget->currentWidget())) {
         auto *doc = reinterpret_cast<Poppler::Document*>(sa->property("popplerDoc").toLongLong());
-        if (doc && target >= 0 && target < doc->numPages()) {
-            QWidget *container = sa->widget();
-            if (container && container->layout()) {
-                QWidget *pageWidget = container->layout()->itemAt(target)->widget();
-                if (pageWidget) {
-                    sa->verticalScrollBar()->setValue(pageWidget->y());
-                    sa->setProperty("currentPage", target);
-                    updateToolbarDisplay();
-                }
-            }
+        auto *viewport = qobject_cast<PdfViewport*>(sa->widget());
+        if (doc && viewport && target >= 0 && target < doc->numPages()) {
+            sa->verticalScrollBar()->setValue(viewport->pageYOffset(target));
+            updateToolbarDisplay();
         }
     }
 }
@@ -1914,10 +1824,10 @@ void MainWindow::applyZoomToCurrentDocument(double newZoom) {
     if (!sa) return;
 
     auto *doc = reinterpret_cast<Poppler::Document*>(sa->property("popplerDoc").toLongLong());
-    QWidget *container = sa->widget();
-    if (!doc || !container || !container->layout()) return;
+    auto *viewport = qobject_cast<PdfViewport*>(sa->widget());
+    if (!doc || !viewport) return;
 
-    int currentPage = sa->property("currentPage").toInt();
+    int currentPage = viewport->currentVisiblePage();
     currentPage = qBound(0, currentPage, doc->numPages() - 1);
 
     // Keep the current page as the anchor. Ratio-based restoring can land in a
@@ -1925,74 +1835,23 @@ void MainWindow::applyZoomToCurrentDocument(double newZoom) {
     currentZoom = newZoom;
     sa->setProperty("zoomFactor", currentZoom);
 
-    QLayout *layout = container->layout();
-    for (int i = 0; i < layout->count(); ++i) {
-        PdfPageWidget *lbl = qobject_cast<PdfPageWidget*>(layout->itemAt(i)->widget());
-        if (!lbl) continue;
-
-        qreal baseW = lbl->property("basePageWidth").toReal();
-        qreal baseH = lbl->property("basePageHeight").toReal();
-
-        if (baseW <= 0 || baseH <= 0) {
-            std::unique_ptr<Poppler::Page> page = doc->page(i);
-            if (!page) continue;
-            QSizeF size = page->pageSizeF();
-            baseW = size.width();
-            baseH = size.height();
-            lbl->setProperty("basePageWidth", baseW);
-            lbl->setProperty("basePageHeight", baseH);
-        }
-
-        const int w = qMax(1, qCeil(baseW * currentZoom));
-        const int h = qMax(1, qCeil(baseH * currentZoom));
-        lbl->setFixedSize(w, h);
-        lbl->setProperty("needsRender", true);
-        // Drop the old 100% pixmap immediately. Keeping an old pixmap while the
-        // page widget is being resized can leave stale paint artifacts during
-        // the zoom relayout.
-        lbl->setPagePixmap(QPixmap());
-        lbl->updateGeometry();
+    // Immediately evict old-zoom pixmaps to free RAM!
+    const quintptr docId = reinterpret_cast<quintptr>(doc);
+    if (m_pageCache) {
+        int keepZoomPermille = qRound(currentZoom * 1000);
+        m_pageCache->clearForDocumentExceptZoom(docId, keepZoomPermille);
     }
 
-    syncPdfContainerGeometry(sa);
+    // Apply zoom to viewport which will recalculate geometry
+    viewport->setDocument(doc, m_pageCache, currentZoom, devicePixelRatioF());
 
-    if (QLayoutItem *item = layout->itemAt(currentPage)) {
-        if (QWidget *pageWidget = item->widget()) {
-            sa->verticalScrollBar()->setValue(pageWidget->y());
-        }
-    }
+    // Jump to same page anchor
+    sa->verticalScrollBar()->setValue(viewport->pageYOffset(currentPage));
 
-    // Render the anchor page immediately.  The old bug happened because the
-    // visible-page render only ran reliably after a scrollbar event.
     renderVisiblePages(sa);
     updateToolbarDisplay();
-    container->update();
+    viewport->update();
     sa->viewport()->update();
-
-    // One more refresh after Qt recalculates scrollbar ranges. This is the key
-    // part that prevents the “blank until dragging the scrollbar” failure.
-    QPointer<QScrollArea> safeArea(sa);
-    QTimer::singleShot(0, this, [this, safeArea, currentPage]() {
-        if (!safeArea) return;
-        QWidget *c = safeArea->widget();
-        if (c && c->layout()) {
-            syncPdfContainerGeometry(safeArea.data());
-            if (QLayoutItem *item = c->layout()->itemAt(currentPage)) {
-                if (QWidget *pageWidget = item->widget()) {
-                    safeArea->verticalScrollBar()->setValue(pageWidget->y());
-                }
-            }
-        }
-        renderVisiblePages(safeArea.data());
-        if (c) c->update();
-        safeArea->viewport()->update();
-    });
-
-    QTimer::singleShot(30, this, [this, safeArea]() {
-        if (!safeArea) return;
-        renderVisiblePages(safeArea.data());
-        safeArea->viewport()->update();
-    });
 }
 
 void MainWindow::zoomIn() {

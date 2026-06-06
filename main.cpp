@@ -14,6 +14,7 @@
 #include <QGuiApplication>
 #include <QQmlApplicationEngine>
 #include <QIcon>
+#include <QPixmapCache>
 
 namespace {
 class InputMethodWakeupFilter final : public QObject {
@@ -79,6 +80,11 @@ int main(int argc, char *argv[]) {
 
     QApplication app(argc, argv);
     Q_INIT_RESOURCE(resources);
+
+    // Cap Qt's global pixmap cache to 10 MB (default is 10 MB on desktop,
+    // but explicit is safer).  Large PDF page pixmaps are managed by our
+    // own PageCache, so the global cache does not need to be large.
+    QPixmapCache::setCacheLimit(10240); // 10 MB in KB
 
     InputMethodWakeupFilter inputMethodWakeupFilter(&app);
     app.installEventFilter(&inputMethodWakeupFilter);

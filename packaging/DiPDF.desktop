@@ -1,7 +1,7 @@
 [Desktop Entry]
 Type=Application
 Name=DiPDF
-Comment=Phần mềm đọc tài liệu PDF
+Comment=PDF reader built with Qt 6
 Exec=DiPDF %f
 Icon=DiPDF
 StartupWMClass=DiPDF
