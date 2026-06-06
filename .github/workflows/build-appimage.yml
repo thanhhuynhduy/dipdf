@@ -1,0 +1,86 @@
+name: Build AppImage
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+  workflow_dispatch:
+  release:
+    types: [created]
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04   # ✅ tránh lỗi glibc
+
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt update
+          sudo apt install -y \
+            build-essential \
+            cmake \
+            pkg-config \
+            wget \
+            file \
+            qt6-base-dev \
+            qt6-declarative-dev \
+            libpoppler-qt6-dev
+
+      - name: Build project
+        run: |
+          mkdir build
+          cd build
+          cmake ..
+          make -j$(nproc)
+
+      - name: Prepare AppDir
+        run: |
+          mkdir -p AppDir/usr/bin
+          mkdir -p AppDir/usr/share/applications
+          mkdir -p AppDir/usr/share/icons/hicolor
+
+          cp build/DiPDF AppDir/usr/bin/
+
+          # copy toàn bộ icon multi-size
+          cp -r icons/hicolor/* AppDir/usr/share/icons/hicolor/
+
+      - name: Create desktop entry
+        run: |
+          cat > AppDir/DiPDF.desktop <<EOF
+          [Desktop Entry]
+          Name=DiPDF
+          Exec=DiPDF
+          Icon=dipdf
+          Type=Application
+          Categories=Office;Viewer;
+          EOF
+
+      - name: Download linuxdeployqt
+        run: |
+          wget https://github.com/probonopd/linuxdeployqt/releases/download/continuous/linuxdeployqt-continuous-x86_64.AppImage
+          chmod +x linuxdeployqt-continuous-x86_64.AppImage
+
+      - name: Build AppImage
+        run: |
+          ./linuxdeployqt-continuous-x86_64.AppImage AppDir/DiPDF.desktop -appimage
+
+      - name: Rename AppImage
+        run: |
+          FILE=$(ls *.AppImage)
+          mv "$FILE" "DiPDF-${{ github.ref_name }}-x86_64.AppImage"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: DiPDF-AppImage
+          path: DiPDF-*.AppImage
+
+      # ✅ upload vào Release nếu có
+      - name: Upload to GitHub Release
+        if: github.event_name == 'release'
+        uses: softprops/action-gh-release@v2
+        with:
+          files: DiPDF-*.AppImage

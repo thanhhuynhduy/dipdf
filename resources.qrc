@@ -1,0 +1,23 @@
+<!DOCTYPE RCC>
+<RCC version="1.0">
+    <qresource prefix="/">
+        <file>assets/Quicksand-Regular.ttf</file>
+        <file>assets/Quicksand-Medium.ttf</file>
+        <file>assets/Quicksand-Bold.ttf</file>
+        <file>assets/MaterialSymbolsOutlined.ttf</file>
+        <file>assets/home.svg</file>
+        <file>assets/history.svg</file>
+        <file>assets/star.svg</file>
+        <file>assets/settings.svg</file>
+        <file>assets/picture_as_pdf.svg</file>
+        <file>assets/save.svg</file>
+        <file>assets/sync.svg</file>
+        <file>assets/pdf-colored.svg</file>
+        <file>assets/close.svg</file>
+        <file>assets/chevron-right.svg</file>
+        <file>assets/chevron-down.svg</file>
+        <file>assets/translate.svg</file>
+        <file>assets/chat.svg</file>
+        <file>assets/icon.png</file>
+    </qresource>
+</RCC>
