@@ -71,7 +71,7 @@ jobs:
 
       - name: Build AppImage
         run: |
-          ./linuxdeployqt-continuous-x86_64.AppImage AppDir/DiPDF.desktop \
+          ./squashfs-root/AppRun AppDir/DiPDF.desktop \
             -appimage \
             -unsupported-allow-new-glibc
 
