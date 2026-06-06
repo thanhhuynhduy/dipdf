@@ -1,93 +1,88 @@
-name: Build AppImage (Fedora)
+name: Build AppImage
 
 on:
   push:
-    branches: [ "main" ]
+    branches:
+      - main
+      - master
+    tags:
+      - 'v*'
   pull_request:
   workflow_dispatch:
 
+permissions:
+  contents: write
+
 jobs:
-  build:
-    runs-on: ubuntu-latest
-
-    env:
-      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
-
-    # ✅ chạy toàn bộ job trong container Fedora 44
-    container:
-      image: fedora:44
+  build-appimage:
+    name: Build DiPDF AppImage
+    runs-on: ubuntu-24.04
 
     steps:
-      - name: Install dependencies (Fedora)
-        run: |
-          dnf -y update
-          dnf -y install \
-            git cmake gcc-c++ \
-            qt6-qtbase-devel \
-            qt6-qtdeclarative-devel \
-            qt6-qtdeclarative \
-            qt6-qtbase \
-            qt6-qttools \
-            qt6-qttools-devel \
-            poppler-qt6-devel \
-            pkgconf-pkg-config \
-            wget file
-
       - name: Checkout source
         uses: actions/checkout@v4
 
-      - name: Build project
+      - name: Install build dependencies
         run: |
-          mkdir build
-          cd build
-          cmake ..
-          make -j$(nproc)
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential \
+            cmake \
+            ninja-build \
+            git \
+            wget \
+            file \
+            patchelf \
+            desktop-file-utils \
+            ca-certificates \
+            pkg-config \
+            libfuse2t64 \
+            qt6-base-dev \
+            qt6-base-dev-tools \
+            qt6-declarative-dev \
+            qt6-svg-dev \
+            qt6-wayland \
+            libpoppler-qt6-dev \
+            libxcb-cursor0 \
+            libxcb-cursor-dev \
+            libxkbcommon-dev \
+            libxkbcommon-x11-0 \
+            libxkbcommon-x11-dev
 
-      - name: Prepare AppDir
+      - name: Prepare version
+        shell: bash
         run: |
-          mkdir -p AppDir/usr/bin
-          mkdir -p AppDir/usr/share/applications
-          mkdir -p AppDir/usr/share/icons/hicolor
+          if [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
+            VERSION="${GITHUB_REF_NAME#v}"
+          else
+            VERSION="1.0.${GITHUB_RUN_NUMBER}"
+          fi
 
-          cp build/DiPDF AppDir/usr/bin/
-          cp -r icons/hicolor/* AppDir/usr/share/icons/hicolor/
-
-      - name: Create desktop entry
-        run: |
-          cat > AppDir/DiPDF.desktop <<EOF
-          [Desktop Entry]
-          Name=DiPDF
-          Exec=DiPDF
-          Icon=dipdf
-          Type=Application
-          Categories=Office;Viewer;
-          EOF
-
-      - name: Download linuxdeployqt
-        run: |
-          wget https://github.com/probonopd/linuxdeployqt/releases/download/continuous/linuxdeployqt-continuous-x86_64.AppImage
-          chmod +x linuxdeployqt-continuous-x86_64.AppImage
-
-      # ✅ FIX: extract AppImage thay vì chạy trực tiếp
-      - name: Extract linuxdeployqt
-        run: |
-          ./linuxdeployqt-continuous-x86_64.AppImage --appimage-extract
+          echo "VERSION=${VERSION}" >> "$GITHUB_ENV"
+          echo "ARCH=x86_64" >> "$GITHUB_ENV"
+          echo "APPIMAGE_EXTRACT_AND_RUN=1" >> "$GITHUB_ENV"
+          echo "NO_STRIP=1" >> "$GITHUB_ENV"
 
       - name: Build AppImage
+        shell: bash
         run: |
-          export QML_SOURCES_PATHS=.
-          export QT_PLUGIN_PATH=/usr/lib64/qt6/plugins
-          export QML2_IMPORT_PATH=/usr/lib64/qt6/qml
+          chmod +x ./build-appimage-docker.sh
+          VERSION="${VERSION}" ARCH="${ARCH}" ./build-appimage-docker.sh
 
-          ./squashfs-root/AppRun AppDir/DiPDF.desktop \
-            -appimage \
-            -unsupported-allow-new-glibc \
-            -qmldir=. \
-            -bundle-non-qt-libs \
-            -verbose=2
+      - name: Show output
+        shell: bash
+        run: |
+          ls -lh *.AppImage
 
-      - name: Upload artifact
+      - name: Upload AppImage artifact
         uses: actions/upload-artifact@v4
         with:
-          name: DiPDF-AppImage
-          path: "*.AppImage"
+          name: DiPDF-AppImage-${{ env.VERSION }}-${{ env.ARCH }}
+          path: '*.AppImage'
+          if-no-files-found: error
+
+      - name: Upload AppImage to GitHub Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: '*.AppImage'
