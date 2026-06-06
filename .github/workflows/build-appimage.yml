@@ -25,6 +25,10 @@ jobs:
             git cmake gcc-c++ \
             qt6-qtbase-devel \
             qt6-qtdeclarative-devel \
+            qt6-qtdeclarative \
+            qt6-qtbase \
+            qt6-qttools \
+            qt6-qttools-devel \
             poppler-qt6-devel \
             pkgconf-pkg-config \
             wget file
@@ -73,6 +77,7 @@ jobs:
         run: |
           export QML_SOURCES_PATHS=.
           export QT_PLUGIN_PATH=/usr/lib64/qt6/plugins
+          export QML2_IMPORT_PATH=/usr/lib64/qt6/qml
 
           ./squashfs-root/AppRun AppDir/DiPDF.desktop \
             -appimage \
