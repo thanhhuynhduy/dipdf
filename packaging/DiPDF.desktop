@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=DiPDF
+Comment=Phần mềm đọc tài liệu PDF
+Exec=DiPDF %f
+Icon=DiPDF
+StartupWMClass=DiPDF
+Categories=Office;Viewer;
+Terminal=false
+MimeType=application/pdf;

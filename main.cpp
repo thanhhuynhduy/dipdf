@@ -53,6 +53,14 @@ protected:
 
 int main(int argc, char *argv[]) {
 #if defined(Q_OS_LINUX)
+    // Force XCB instead of Wayland for AppImage builds.
+    // On GNOME/Wayland, a Qt Wayland AppImage can run without client-side
+    // decorations, which makes the minimize/maximize/close buttons disappear.
+    // Launch with DIPDF_KEEP_QPA_PLATFORM=1 to keep the user's platform choice.
+    if (!qEnvironmentVariableIsSet("DIPDF_KEEP_QPA_PLATFORM")) {
+        qputenv("QT_QPA_PLATFORM", QByteArrayLiteral("xcb"));
+    }
+
     // This app targets fcitx5 Vietnamese input on Linux. Force Qt to load the
     // fcitx Qt input-context plugin before QApplication is created. If you ever
     // need another IME, launch with DIPDF_KEEP_IM_MODULE=1.
@@ -64,13 +72,23 @@ int main(int argc, char *argv[]) {
     }
 #endif
 
+    QCoreApplication::setApplicationName("DiPDF");
+    QCoreApplication::setApplicationVersion("1.0.0");
+    QCoreApplication::setOrganizationName("DiPDF");
+    QGuiApplication::setDesktopFileName("DiPDF");
+
     QApplication app(argc, argv);
+    Q_INIT_RESOURCE(resources);
+
     InputMethodWakeupFilter inputMethodWakeupFilter(&app);
     app.installEventFilter(&inputMethodWakeupFilter);
     app.setStyle(QStyleFactory::create("Fusion"));
 
-    // ✅ set icon cho app
-    app.setWindowIcon(QIcon(":/assets/icon.png"));
+    // Set both application and top-level window icons.
+    // The app icon is used by dialogs; the window icon is what most Linux
+    // desktops show in the taskbar/window switcher.
+    const QIcon appIcon(":/assets/icon.png");
+    app.setWindowIcon(appIcon);
 
     QQmlApplicationEngine engine;
 

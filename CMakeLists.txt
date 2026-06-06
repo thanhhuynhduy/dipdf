@@ -10,14 +10,10 @@ set(CMAKE_AUTOUIC ON)
 set(CMAKE_AUTORCC ON)
 
 # Nạp các module cần thiết của Qt6
-find_package(Qt6 COMPONENTS Widgets Network Qml Quick REQUIRED)
+find_package(Qt6 COMPONENTS Widgets Network Qml Quick Svg REQUIRED)
 
-# Tìm thư viện Poppler-Qt6 và thiết lập dạng IMPORTED_TARGET để gộp link chuẩn
 find_package(PkgConfig REQUIRED)
-# ❌ bỏ Qt6 poppler
-# pkg_check_modules(POPPLER_QT6 REQUIRED IMPORTED_TARGET poppler-qt6)
 
-# ✅ dùng poppler-qt5 (có trên Ubuntu 22.04)
 pkg_check_modules(POPPLER_QT6 REQUIRED IMPORTED_TARGET poppler-qt6)
 
 # Danh sách file nguồn
@@ -39,15 +35,29 @@ target_link_libraries(DiPDF PRIVATE
         Qt6::Network
         Qt6::Qml
         Qt6::Quick
+        Qt6::Svg
         PkgConfig::POPPLER_QT6
 )
 
 target_include_directories(DiPDF PRIVATE
-        ${POPPLER_QT6_INCLUDE_DIRS}
+        /usr/include/qt6/QtCore5Compat
 )
 
-target_include_directories(DiPDF PRIVATE
-    /usr/include/qt6/QtCore5Compat
+install(TARGETS DiPDF
+        RUNTIME DESTINATION bin
 )
 
-qt_add_resources(RESOURCES resources.qrc)
+install(FILES packaging/DiPDF.desktop
+        DESTINATION share/applications
+)
+
+# Install all available icon sizes so desktop environments and AppImage
+# integration can pick the best icon for the taskbar, Alt-Tab and launcher.
+install(DIRECTORY icons/hicolor
+        DESTINATION share/icons
+)
+
+# Keep the packaging icon too; linuxdeploy uses this file with --icon-file.
+install(FILES packaging/DiPDF.png
+        DESTINATION share/icons/hicolor/256x256/apps
+)
