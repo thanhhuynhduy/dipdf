@@ -42,9 +42,8 @@ target_link_libraries(DiPDF PRIVATE
         PkgConfig::POPPLER_QT6
 )
 
-# ✅ FIX: ensure include dirs của Core5Compat được thêm
 target_include_directories(DiPDF PRIVATE
-        ${POPPLER_QT5_INCLUDE_DIRS}
+        ${POPPLER_QT6_INCLUDE_DIRS}
 )
 
 target_include_directories(DiPDF PRIVATE

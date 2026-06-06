@@ -71,9 +71,15 @@ jobs:
 
       - name: Build AppImage
         run: |
+          export QML_SOURCES_PATHS=.
+          export QT_PLUGIN_PATH=/usr/lib64/qt6/plugins
+
           ./squashfs-root/AppRun AppDir/DiPDF.desktop \
             -appimage \
-            -unsupported-allow-new-glibc
+            -unsupported-allow-new-glibc \
+            -qmldir=. \
+            -bundle-non-qt-libs \
+            -verbose=2
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
