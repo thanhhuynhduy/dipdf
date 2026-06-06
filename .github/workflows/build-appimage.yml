@@ -10,7 +10,11 @@ on:
 
 jobs:
   build:
-    runs-on: ubuntu-22.04   # ✅ tránh lỗi glibc
+    runs-on: ubuntu-22.04
+
+    # ✅ force GitHub Actions dùng Node 24 (fix warning)
+    env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
     steps:
       - name: Checkout source
@@ -27,7 +31,7 @@ jobs:
             file \
             qt6-base-dev \
             qt6-declarative-dev \
-            libpoppler-qt6-dev
+            libpoppler-qt5-dev
 
       - name: Build project
         run: |
@@ -44,7 +48,7 @@ jobs:
 
           cp build/DiPDF AppDir/usr/bin/
 
-          # copy toàn bộ icon multi-size
+          # ✅ copy icon multi-size
           cp -r icons/hicolor/* AppDir/usr/share/icons/hicolor/
 
       - name: Create desktop entry
@@ -78,7 +82,6 @@ jobs:
           name: DiPDF-AppImage
           path: DiPDF-*.AppImage
 
-      # ✅ upload vào Release nếu có
       - name: Upload to GitHub Release
         if: github.event_name == 'release'
         uses: softprops/action-gh-release@v2

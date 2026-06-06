@@ -14,7 +14,11 @@ find_package(Qt6 COMPONENTS Widgets Network Qml Quick REQUIRED)
 
 # Tìm thư viện Poppler-Qt6 và thiết lập dạng IMPORTED_TARGET để gộp link chuẩn
 find_package(PkgConfig REQUIRED)
-pkg_check_modules(POPPLER_QT6 REQUIRED IMPORTED_TARGET poppler-qt6)
+# ❌ bỏ Qt6 poppler
+# pkg_check_modules(POPPLER_QT6 REQUIRED IMPORTED_TARGET poppler-qt6)
+
+# ✅ dùng poppler-qt5 (có trên Ubuntu 22.04)
+pkg_check_modules(POPPLER_QT5 REQUIRED IMPORTED_TARGET poppler-qt5)
 
 # Danh sách file nguồn
 set(PROJECT_SOURCES
@@ -35,7 +39,7 @@ target_link_libraries(DiPDF PRIVATE
         Qt6::Network
         Qt6::Qml       # ✅ thêm
         Qt6::Quick     # ✅ thêm
-        PkgConfig::POPPLER_QT6
+        PkgConfig::POPPLER_QT5   # ✅ đổi sang QT5
 )
 
 qt_add_resources(RESOURCES resources.qrc)
