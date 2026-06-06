@@ -16,8 +16,8 @@
 #include <QNetworkReply>
 #include <QStandardItemModel>
 #include <QSettings>
-#include <QCheckBox>
-#include <QDialog>
+#include <QObject>
+#include <QString>
 #include <poppler-qt6.h>
 
 class MainWindow : public QMainWindow {

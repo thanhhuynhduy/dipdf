@@ -18,7 +18,7 @@ find_package(PkgConfig REQUIRED)
 # pkg_check_modules(POPPLER_QT6 REQUIRED IMPORTED_TARGET poppler-qt6)
 
 # ✅ dùng poppler-qt5 (có trên Ubuntu 22.04)
-pkg_check_modules(POPPLER_QT5 REQUIRED IMPORTED_TARGET poppler-qt5)
+pkg_check_modules(POPPLER_QT6 REQUIRED IMPORTED_TARGET poppler-qt6)
 
 # Danh sách file nguồn
 set(PROJECT_SOURCES
@@ -37,9 +37,18 @@ qt_add_executable(DiPDF ${PROJECT_SOURCES})
 target_link_libraries(DiPDF PRIVATE
         Qt6::Widgets
         Qt6::Network
-        Qt6::Qml       # ✅ thêm
-        Qt6::Quick     # ✅ thêm
-        PkgConfig::POPPLER_QT5   # ✅ đổi sang QT5
+        Qt6::Qml
+        Qt6::Quick
+        PkgConfig::POPPLER_QT6
+)
+
+# ✅ FIX: ensure include dirs của Core5Compat được thêm
+target_include_directories(DiPDF PRIVATE
+        ${POPPLER_QT5_INCLUDE_DIRS}
+)
+
+target_include_directories(DiPDF PRIVATE
+    /usr/include/qt6/QtCore5Compat
 )
 
 qt_add_resources(RESOURCES resources.qrc)

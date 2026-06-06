@@ -1,37 +1,36 @@
-name: Build AppImage
+name: Build AppImage (Fedora)
 
 on:
   push:
     branches: [ "main" ]
   pull_request:
   workflow_dispatch:
-  release:
-    types: [created]
 
 jobs:
   build:
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-latest
 
-    # ✅ force GitHub Actions dùng Node 24 (fix warning)
     env:
       FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
+    # ✅ chạy toàn bộ job trong container Fedora 44
+    container:
+      image: fedora:44
+
     steps:
+      - name: Install dependencies (Fedora)
+        run: |
+          dnf -y update
+          dnf -y install \
+            git cmake gcc-c++ \
+            qt6-qtbase-devel \
+            qt6-qtdeclarative-devel \
+            poppler-qt6-devel \
+            pkgconf-pkg-config \
+            wget file
+
       - name: Checkout source
         uses: actions/checkout@v4
-
-      - name: Install dependencies
-        run: |
-          sudo apt update
-          sudo apt install -y \
-            build-essential \
-            cmake \
-            pkg-config \
-            wget \
-            file \
-            qt6-base-dev \
-            qt6-declarative-dev \
-            libpoppler-qt5-dev
 
       - name: Build project
         run: |
@@ -47,8 +46,6 @@ jobs:
           mkdir -p AppDir/usr/share/icons/hicolor
 
           cp build/DiPDF AppDir/usr/bin/
-
-          # ✅ copy icon multi-size
           cp -r icons/hicolor/* AppDir/usr/share/icons/hicolor/
 
       - name: Create desktop entry
@@ -69,21 +66,12 @@ jobs:
 
       - name: Build AppImage
         run: |
-          ./linuxdeployqt-continuous-x86_64.AppImage AppDir/DiPDF.desktop -appimage
-
-      - name: Rename AppImage
-        run: |
-          FILE=$(ls *.AppImage)
-          mv "$FILE" "DiPDF-${{ github.ref_name }}-x86_64.AppImage"
+          ./linuxdeployqt-continuous-x86_64.AppImage AppDir/DiPDF.desktop \
+            -appimage \
+            -unsupported-allow-new-glibc
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: DiPDF-AppImage
-          path: DiPDF-*.AppImage
-
-      - name: Upload to GitHub Release
-        if: github.event_name == 'release'
-        uses: softprops/action-gh-release@v2
-        with:
-          files: DiPDF-*.AppImage
+          path: "*.AppImage"
