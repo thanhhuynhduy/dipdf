@@ -132,7 +132,10 @@ void enableTextInputMethod(QWidget *widget) {
     if (!widget) return;
     widget->setAttribute(Qt::WA_InputMethodEnabled, true);
     widget->setFocusPolicy(Qt::StrongFocus);
-    widget->setInputMethodHints(Qt::ImhNone);
+    if (qobject_cast<QTextEdit*>(widget))
+        widget->setInputMethodHints(Qt::ImhMultiLine);
+    else
+        widget->setInputMethodHints(Qt::ImhNone);
 }
 }
 
@@ -921,6 +924,7 @@ void MainWindow::createRightSidebar() {
         if (targetPage >= 0) {
             if (auto *sa = qobject_cast<QScrollArea*>(pdfTabWidget->currentWidget())) {
                 renderCurrentPage(sa, targetPage);
+                scheduleThumbnailRenderAround(targetPage);
             }
         }
     });
@@ -1033,7 +1037,7 @@ void MainWindow::createRightSidebar() {
     // Input composer
     aiInputArea = new QTextEdit(this);
     enableTextInputMethod(aiInputArea);
-    aiInputArea->setPlaceholderText("💬 Nhập câu hỏi hoặc nội dung cần dịch...");
+    aiInputArea->setPlaceholderText(QStringLiteral("\U0001F4AC Nh\u1EADp c\u00E2u h\u1ECFi ho\u1EB7c n\u1ED9i dung c\u1EA7n d\u1ECBch..."));
     aiInputArea->setMaximumHeight(90);
 
     QHBoxLayout *aiBtnLayout = new QHBoxLayout();
@@ -1251,8 +1255,9 @@ void MainWindow::openPdfFile(const QString &filePath) {
         renderVisiblePages(scrollArea);
     });
 
-    // Update toolbar when PdfViewport detects the current page changed.
-    connect(viewport, &PdfViewport::currentPageChanged, this, [this](int) {
+    // Update toolbar when PdfViewport detects
+    // the current page changed (e.g. while scrolling).
+    connect(viewport, &PdfViewport::currentPageChanged, this, [this](int page) {
         updateToolbarDisplay();
     });
 
@@ -1369,26 +1374,54 @@ void MainWindow::renderVisibleThumbnailsNow() {
     if (!doc) return;
 
     const int total = doc->numPages();
-    const quintptr docId = reinterpret_cast<quintptr>(doc);
 
-    // Determine visible item range using QListWidget's itemAt()
-    QListWidgetItem *firstItem = thumbnailListWidget->itemAt(0, 0);
-    QListWidgetItem *lastItem  = thumbnailListWidget->itemAt(0, thumbnailListWidget->viewport()->height() - 1);
-    int firstVisible = firstItem ? thumbnailListWidget->row(firstItem) : 0;
-    int lastVisible  = lastItem  ? thumbnailListWidget->row(lastItem)  : qMin(total - 1, 5);
+    // ── Robust visible-range detection using visualItemRect() ──
+    const QRect vpRect = thumbnailListWidget->viewport()->rect();
+    int firstVisible = -1, lastVisible = -1;
 
-    // Buffer: render a few extra items above/below
+    for (int i = 0; i < total; ++i) {
+        QListWidgetItem *item = thumbnailListWidget->item(i);
+        if (!item) continue;
+        QRect itemRect = thumbnailListWidget->visualItemRect(item);
+        if (itemRect.intersects(vpRect)) {
+            if (firstVisible < 0) firstVisible = i;
+            lastVisible = i;
+        } else if (firstVisible >= 0) {
+            break;
+        }
+    }
+
+    if (firstVisible < 0) {
+        int cur = thumbnailListWidget->currentRow();
+        if (cur < 0) cur = 0;
+        firstVisible = qMax(0, cur - 4);
+        lastVisible  = qMin(total - 1, cur + 4);
+    }
+
     firstVisible = qMax(0, firstVisible - 3);
     lastVisible  = qMin(total - 1, lastVisible + 3);
 
-    for (int i = firstVisible; i <= lastVisible; ++i) {
+    renderThumbnailRange(firstVisible, lastVisible);
+}
+
+void MainWindow::renderThumbnailRange(int first, int last) {
+    if (!thumbnailListWidget) return;
+    auto *sa = qobject_cast<QScrollArea*>(pdfTabWidget->currentWidget());
+    if (!sa) return;
+    auto *doc = reinterpret_cast<Poppler::Document*>(sa->property("popplerDoc").toLongLong());
+    if (!doc) return;
+
+    const int total = doc->numPages();
+    const quintptr docId = reinterpret_cast<quintptr>(doc);
+    first = qMax(0, first);
+    last  = qMin(total - 1, last);
+
+    for (int i = first; i <= last; ++i) {
         QListWidgetItem *item = thumbnailListWidget->item(i);
         if (!item) continue;
 
-        // Already rendered?
         if (item->data(Qt::UserRole + 1).toBool()) continue;
 
-        // Try thumbnail cache
         if (m_thumbnailCache) {
             PageCacheKey key = makeCacheKey(docId, i, THUMBNAIL_DPI, 1.0);
             QPixmap cached = m_thumbnailCache->get(key);
@@ -1399,7 +1432,6 @@ void MainWindow::renderVisibleThumbnailsNow() {
             }
         }
 
-        // Render thumbnail
         std::unique_ptr<Poppler::Page> page = doc->page(i);
         if (page) {
             QImage img = page->renderToImage(THUMBNAIL_DPI, THUMBNAIL_DPI);
@@ -1423,6 +1455,23 @@ void MainWindow::renderVisibleThumbnailsNow() {
             }
         }
     }
+}
+
+void MainWindow::scheduleThumbnailRenderAround(int pageIndex) {
+    if (!thumbnailListWidget) return;
+    const int total = thumbnailListWidget->count();
+    if (pageIndex < 0 || pageIndex >= total) return;
+
+    thumbnailListWidget->blockSignals(true);
+    thumbnailListWidget->setCurrentRow(pageIndex);
+    thumbnailListWidget->scrollToItem(
+        thumbnailListWidget->item(pageIndex),
+        QAbstractItemView::PositionAtCenter);
+    thumbnailListWidget->blockSignals(false);
+
+    renderThumbnailRange(pageIndex - 4, pageIndex + 4);
+
+    QTimer::singleShot(0, this, &MainWindow::renderVisibleThumbnailsNow);
 }
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -1473,7 +1522,7 @@ void MainWindow::onBookmarkClicked(const QModelIndex &index) {
     if (targetPage >= 0) {
         if (auto *sa = qobject_cast<QScrollArea*>(pdfTabWidget->currentWidget())) {
             renderCurrentPage(sa, targetPage);
-            thumbnailListWidget->setCurrentRow(targetPage);
+            scheduleThumbnailRenderAround(targetPage);
         }
     }
 }
@@ -1815,6 +1864,7 @@ void MainWindow::jumpToPage() {
         if (doc && viewport && target >= 0 && target < doc->numPages()) {
             sa->verticalScrollBar()->setValue(viewport->pageYOffset(target));
             updateToolbarDisplay();
+            scheduleThumbnailRenderAround(target);
         }
     }
 }

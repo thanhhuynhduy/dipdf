@@ -20,6 +20,7 @@ RUN apt-get update && apt-get install -y \
     qt6-declarative-dev \
     qt6-svg-dev \
     qt6-wayland \
+    fcitx5-frontend-qt6 \
     libpoppler-qt6-dev \
     libxcb-cursor0 \
     libxcb-cursor-dev \
@@ -27,5 +28,7 @@ RUN apt-get update && apt-get install -y \
     libxkbcommon-x11-0 \
     libxkbcommon-x11-dev \
     && rm -rf /var/lib/apt/lists/*
+
+RUN find /usr -path '*platforminputcontexts*' -name '*fcitx*' -print
 
 WORKDIR /work

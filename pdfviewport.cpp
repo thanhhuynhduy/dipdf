@@ -15,7 +15,12 @@ PdfViewport::PdfViewport(QWidget *parent)
     : QWidget(parent)
 {
     setFocusPolicy(Qt::StrongFocus);
+    setMouseTracking(true);
     setCursor(Qt::ArrowCursor);
+
+    m_renderTimer.setSingleShot(true);
+    connect(&m_renderTimer, &QTimer::timeout, this, &PdfViewport::doRender);
+
     setAttribute(Qt::WA_OpaquePaintEvent, true);
     setAttribute(Qt::WA_NoSystemBackground, false);
     setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Fixed);
@@ -203,13 +208,41 @@ void PdfViewport::renderVisiblePages(int scrollY, int viewportHeight)
     // Ensure content width stays in sync with viewport
     syncContentWidth();
 
-    auto [first, last] = visiblePageRange(scrollY - RENDER_MARGIN,
-                                           viewportHeight + 2 * RENDER_MARGIN);
+    m_lastScrollY = scrollY;
+    m_lastViewportHeight = viewportHeight;
+
+    // Update current page tracking synchronously for fast toolbar response
+    int centerY = scrollY + viewportHeight / 2;
+    int newPage = pageAtY(centerY);
+    if (newPage >= 0 && newPage != m_currentPage) {
+        m_currentPage = newPage;
+        emit currentPageChanged(m_currentPage);
+    }
+
+    // Schedule debounced rendering (e.g., ~1 frame)
+    m_renderTimer.start(16);
+}
+
+void PdfViewport::doRender()
+{
+    if (!m_doc || !m_pageCache || m_pages.empty()) return;
+
+    auto [first, last] = visiblePageRange(m_lastScrollY - RENDER_MARGIN,
+                                           m_lastViewportHeight + 2 * RENDER_MARGIN);
+
+    int pagesRendered = 0;
+    bool moreNeeded = false;
 
     for (int i = first; i <= last; ++i) {
         PageCacheKey key = makeCacheKey(m_docId, i, m_zoom, m_dpr);
         QPixmap cached = m_pageCache->get(key);
         if (!cached.isNull()) continue; // already cached
+
+        // Render budget: at most 2 new pages per tick to avoid freezing UI
+        if (pagesRendered >= 2) {
+            moreNeeded = true;
+            break;
+        }
 
         // Render from Poppler
         std::unique_ptr<Poppler::Page> page = m_doc->page(i);
@@ -230,18 +263,16 @@ void PdfViewport::renderVisiblePages(int scrollY, int viewportHeight)
             QPixmap pix = QPixmap::fromImage(std::move(img));
             m_pageCache->insert(key, pix);
         }
-        // page released here
+        pagesRendered++;
     }
 
-    // Update current page tracking
-    int centerY = scrollY + viewportHeight / 2;
-    int newPage = pageAtY(centerY);
-    if (newPage >= 0 && newPage != m_currentPage) {
-        m_currentPage = newPage;
-        emit currentPageChanged(m_currentPage);
+    if (pagesRendered > 0) {
+        update(); // schedule repaint if anything was rendered
     }
-
-    update(); // schedule repaint
+    
+    if (moreNeeded) {
+        m_renderTimer.start(10); // schedule next batch quickly
+    }
 }
 
 // ════════════════════════════════════════════════════════════════════════════

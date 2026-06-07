@@ -42,6 +42,7 @@ jobs:
             qt6-declarative-dev \
             qt6-svg-dev \
             qt6-wayland \
+            fcitx5-frontend-qt6 \
             libpoppler-qt6-dev \
             libxcb-cursor0 \
             libxcb-cursor-dev \

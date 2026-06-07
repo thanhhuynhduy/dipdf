@@ -9,6 +9,7 @@
 #include <memory>
 #include <vector>
 #include <poppler/qt6/poppler-qt6.h>
+#include <QTimer>
 #include "pagecache.h"
 
 class PageCache;
@@ -71,6 +72,9 @@ protected:
     void mouseReleaseEvent(QMouseEvent *event) override;
     void keyPressEvent(QKeyEvent *event) override;
 
+private slots:
+    void doRender();
+
 private:
     // ── Lightweight per-page metadata (32 bytes each) ──
     struct PageInfo {
@@ -110,6 +114,10 @@ private:
     int m_totalHeight  = 0;
     int m_contentWidth = 0;
     int m_currentPage  = 0;
+
+    QTimer m_renderTimer;
+    int m_lastScrollY = 0;
+    int m_lastViewportHeight = 0;
 
     // Spacing / safety constants
     static constexpr int PAGE_SPACING    = 20;

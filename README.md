@@ -41,10 +41,27 @@ Nếu muốn ép chạy bằng XCB thủ công:
 QT_QPA_PLATFORM=xcb ./DiPDF-*.AppImage
 ```
 
-Nếu muốn giữ platform mặc định của hệ thống thay vì ép XCB:
+Nếu muốn giữ platform mặc định của hệ thống thay vì ép XCB (ví dụ khi dùng Wayland và fcitx5):
 
 ```bash
-DIPDF_KEEP_QPA_PLATFORM=1 ./DiPDF-*.AppImage
+DIPDF_FORCE_XCB=0 ./DiPDF-*.AppImage
+```
+
+### Debug AppImage (Kiểm tra plugin / IME)
+
+Để hiển thị log chi tiết của các Qt plugin (đặc biệt hữu ích khi debug lỗi gõ tiếng Việt fcitx5):
+
+```bash
+QT_DEBUG_PLUGINS=1 ./DiPDF-*.AppImage 2>&1 | tee dipdf-appimage-plugin.log
+```
+
+Để giải nén AppImage và kiểm tra file trực tiếp:
+
+```bash
+./DiPDF-*.AppImage --appimage-extract
+find squashfs-root -path '*platforminputcontexts*' -print
+find squashfs-root -name '*fcitx*' -print
+ldd squashfs-root/usr/plugins/platforminputcontexts/libfcitx5platforminputcontextplugin.so
 ```
 
 ## Build native trên Linux
@@ -201,14 +218,14 @@ Khi push code, mở pull request, chạy thủ công bằng `workflow_dispatch`,
 
 ## Ghi chú kỹ thuật
 
-### Vì sao app ép `QT_QPA_PLATFORM=xcb`?
+### Vì sao app không còn ép `QT_QPA_PLATFORM=xcb` mặc định?
 
-Trên một số desktop Wayland, Qt AppImage có thể chạy không có server-side decoration, làm mất thanh cửa sổ native và mất nút đóng/thu nhỏ/phóng to. Vì vậy app ép `xcb` trước khi tạo `QApplication`.
+Trên một số desktop Wayland, Qt AppImage có thể chạy không có server-side decoration, làm mất thanh cửa sổ native và mất nút đóng/thu nhỏ/phóng to. Tuy nhiên, việc ép dùng `xcb` có thể làm hỏng bộ gõ (IME) fcitx5 trên Wayland.
 
-Có thể override bằng:
+Nếu bạn gặp lỗi mất decoration, bạn có thể ép dùng XCB bằng cách thêm biến môi trường:
 
 ```bash
-DIPDF_KEEP_QPA_PLATFORM=1 ./DiPDF-*.AppImage
+DIPDF_FORCE_XCB=1 ./DiPDF-*.AppImage
 ```
 
 ### Vì sao icon phải nằm trong `resources.qrc`?

@@ -74,6 +74,8 @@ private:
     void addFileToRecent(const QString &filePath);
     void renderSidebarThumbnails(Poppler::Document* doc, QListWidget* listWidget);
     void renderVisibleThumbnailsNow();
+    void renderThumbnailRange(int first, int last);
+    void scheduleThumbnailRenderAround(int pageIndex);
     void loadBookmarksHierarchy(Poppler::Document* doc);
     void parseOutlineNode(const Poppler::OutlineItem &item, QStandardItem *parentItem);
     void renderCurrentPage(QScrollArea *scrollArea, int pageIndex);

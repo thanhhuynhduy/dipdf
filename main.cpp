@@ -15,61 +15,18 @@
 #include <QQmlApplicationEngine>
 #include <QIcon>
 #include <QPixmapCache>
+#include <QLibraryInfo>
 
-namespace {
-class InputMethodWakeupFilter final : public QObject {
-public:
-    using QObject::QObject;
 
-protected:
-    bool eventFilter(QObject *watched, QEvent *event) override {
-        if (event->type() != QEvent::FocusIn && event->type() != QEvent::MouseButtonPress) {
-            return QObject::eventFilter(watched, event);
-        }
-
-        QWidget *widget = qobject_cast<QWidget*>(watched);
-        const bool isTextEditor = qobject_cast<QLineEdit*>(watched)
-                                  || qobject_cast<QTextEdit*>(watched)
-                                  || qobject_cast<QPlainTextEdit*>(watched);
-        if (!widget || !isTextEditor) {
-            return QObject::eventFilter(watched, event);
-        }
-
-        widget->setAttribute(Qt::WA_InputMethodEnabled, true);
-        widget->setInputMethodHints(Qt::ImhNone);
-
-        QPointer<QWidget> safeWidget(widget);
-        QTimer::singleShot(0, [safeWidget]() {
-            if (!safeWidget) return;
-            if (QInputMethod *im = QGuiApplication::inputMethod()) {
-                im->update(Qt::ImQueryAll);
-                im->show();
-            }
-        });
-
-        return QObject::eventFilter(watched, event);
-    }
-};
-}
 
 int main(int argc, char *argv[]) {
 #if defined(Q_OS_LINUX)
-    // Force XCB instead of Wayland for AppImage builds.
-    // On GNOME/Wayland, a Qt Wayland AppImage can run without client-side
-    // decorations, which makes the minimize/maximize/close buttons disappear.
-    // Launch with DIPDF_KEEP_QPA_PLATFORM=1 to keep the user's platform choice.
-    if (!qEnvironmentVariableIsSet("DIPDF_KEEP_QPA_PLATFORM")) {
+    // On Wayland, forcing XCB can break input methods like fcitx5.
+    // If the old XCB workaround is needed for window decorations, use DIPDF_FORCE_XCB=1.
+    // IME module fallbacks are now handled inside the AppImage's AppRun script
+    // or by the user's native desktop environment variables.
+    if (qEnvironmentVariableIsSet("DIPDF_FORCE_XCB")) {
         qputenv("QT_QPA_PLATFORM", QByteArrayLiteral("xcb"));
-    }
-
-    // This app targets fcitx5 Vietnamese input on Linux. Force Qt to load the
-    // fcitx Qt input-context plugin before QApplication is created. If you ever
-    // need another IME, launch with DIPDF_KEEP_IM_MODULE=1.
-    if (!qEnvironmentVariableIsSet("DIPDF_KEEP_IM_MODULE")) {
-        qputenv("QT_IM_MODULE", QByteArrayLiteral("fcitx"));
-        qputenv("XMODIFIERS", QByteArrayLiteral("@im=fcitx"));
-        qputenv("GTK_IM_MODULE", QByteArrayLiteral("fcitx"));
-        qputenv("SDL_IM_MODULE", QByteArrayLiteral("fcitx"));
     }
 #endif
 
@@ -86,8 +43,20 @@ int main(int argc, char *argv[]) {
     // own PageCache, so the global cache does not need to be large.
     QPixmapCache::setCacheLimit(10240); // 10 MB in KB
 
-    InputMethodWakeupFilter inputMethodWakeupFilter(&app);
-    app.installEventFilter(&inputMethodWakeupFilter);
+#if defined(Q_OS_LINUX)
+    // ── IME diagnostic output (visible with QT_LOGGING_RULES="*.debug=true") ──
+    qDebug("[DiPDF-IME] QT_IM_MODULE    = %s", qgetenv("QT_IM_MODULE").constData());
+    qDebug("[DiPDF-IME] XMODIFIERS      = %s", qgetenv("XMODIFIERS").constData());
+    qDebug("[DiPDF-IME] QT_QPA_PLATFORM = %s", qgetenv("QT_QPA_PLATFORM").constData());
+    qDebug("[DiPDF-IME] GTK_IM_MODULE   = %s", qgetenv("GTK_IM_MODULE").constData());
+    qDebug("[DiPDF-IME] SDL_IM_MODULE   = %s", qgetenv("SDL_IM_MODULE").constData());
+    qDebug("[DiPDF-IME] QGuiApplication::platformName() = %s", QGuiApplication::platformName().toUtf8().constData());
+    qDebug("[DiPDF-IME] QLibraryInfo::path(QLibraryInfo::PluginsPath) = %s", QLibraryInfo::path(QLibraryInfo::PluginsPath).toUtf8().constData());
+    qDebug("[DiPDF-IME] Qt plugin path  = %s",
+           QCoreApplication::libraryPaths().join(";").toUtf8().constData());
+    qDebug("[DiPDF-IME] inputMethod()   = %p", static_cast<void*>(app.inputMethod()));
+#endif
+
     app.setStyle(QStyleFactory::create("Fusion"));
 
     // Set both application and top-level window icons.
