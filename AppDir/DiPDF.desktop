@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=DiPDF
+Comment=PDF reader built with Qt 6
+Exec=DiPDF %f
+Icon=DiPDF
+StartupWMClass=DiPDF
+Categories=Office;Viewer;
+Terminal=false
+MimeType=application/pdf;
+X-AppImage-Version=1.0.0

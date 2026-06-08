@@ -602,6 +602,36 @@ void MainWindow::createReaderToolbar() {
     nextBtn->setToolTip("Trang sau");
     nextBtn->setStyleSheet(ThemeManager::toolbarGroupButtonStyle());
 
+    connect(prevBtn, &QPushButton::clicked, this, [this]() {
+        if (auto *sa = qobject_cast<QScrollArea*>(pdfTabWidget->currentWidget())) {
+            auto *viewport = qobject_cast<PdfViewport*>(sa->widget());
+            if (viewport) {
+                int target = viewport->currentVisiblePage() - 1;
+                if (target >= 0) {
+                    sa->verticalScrollBar()->setValue(viewport->pageYOffset(target));
+                    updateToolbarDisplay();
+                    scheduleThumbnailRenderAround(target);
+                }
+            }
+        }
+    });
+
+    connect(nextBtn, &QPushButton::clicked, this, [this]() {
+        if (auto *sa = qobject_cast<QScrollArea*>(pdfTabWidget->currentWidget())) {
+            auto *doc = reinterpret_cast<Poppler::Document*>(sa->property("popplerDoc").toLongLong());
+            auto *viewport = qobject_cast<PdfViewport*>(sa->widget());
+            if (doc && viewport) {
+                int target = viewport->currentVisiblePage() + 1;
+                if (target < doc->numPages()) {
+                    sa->verticalScrollBar()->setValue(viewport->pageYOffset(target));
+                    updateToolbarDisplay();
+                    scheduleThumbnailRenderAround(target);
+                }
+            }
+        }
+    });
+
+
     navLayout->addWidget(prevBtn);
     navLayout->addWidget(pageInput);
     navLayout->addWidget(totalPagesLabel);
